@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sistema de Averías PRO v2</title>
+
+<style>
+body { font-family: Arial; margin:0; background:#f4f4f4; }
+.container { max-width:1000px; margin:auto; background:white; padding:20px; }
+button { padding:8px; margin:3px; cursor:pointer; border:none; border-radius:6px; }
+input, select { padding:10px; margin:5px 0; width:100%; }
+.card { border:1px solid #ddd; padding:10px; margin:10px 0; border-radius:8px; background:#fff; }
+.urgente { border-left:6px solid red; }
+.media { border-left:6px solid orange; }
+.baja { border-left:6px solid green; }
+.espera { border-left:6px solid blue; }
+.topbar { display:flex; justify-content:space-between; align-items:center; }
+.notice { padding:10px; background:#fff3cd; border:1px solid #ffeeba; margin-bottom:10px; }
+.small { font-size:12px; color:#555; }
+
+.modal { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); }
+.modal-content { background:white; padding:20px; margin:10% auto; width:300px; border-radius:10px; }
+</style>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+<div class="container">
+
+<div class="topbar">
+<h2>🔧 Sistema de Averías PRO v2</h2>
+</div>
+
+<div class="notice">⚠️ Sistema interno de mantenimiento multi-restaurante</div>
+
+<h3>🏪 Selecciona restaurante</h3>
+<select id="restaurantSelect">
+<option value="">-- Selecciona restaurante --</option>
+</select>
+
+<h3>👤 Selecciona modo</h3>
+<button id="btnPersonal">Personal</button>
+<button id="btnMant">Mantenimiento</button>
+
+<h3 id="roleText">Sin rol seleccionado</h3>
+
+<div id="form" style="display:none;">
+<h4>➕ Nueva avería</h4>
+<input id="desc" placeholder="Descripción" />
+<select id="priority">
+<option value="baja">Baja</option>
+<option value="media">Media</option>
+<option value="urgente">Urgente</option>
+</select>
+<button id="btnEnviar" type="button">Enviar avería</button>
+</div>
+
+<h3>📋 Averías</h3>
+<div id="list"></div>
+</div>
+
+<!-- MODAL LISTA DE ESPERA -->
+<div id="modal" class="modal">
+  <div class="modal-content">
+    <h3>📅 Lista de espera</h3>
+    <input type="date" id="fechaEspera" />
+    <button onclick="confirmWait()">Guardar</button>
+    <button onclick="closeModal()">Cancelar</button>
+  </div>
+</div>
+
+<!-- MODAL LOGIN MANTENIMIENTO -->
+<div id="loginModal" class="modal">
+  <div class="modal-content">
+    <h3>🔐 Acceso mantenimiento</h3>
+    <input type="password" id="adminPass" placeholder="Introduce clave" />
+    <button onclick="checkAdmin()">Entrar</button>
+    <button onclick="closeLogin()">Cancelar</button>
+  </div>
+</div>
+
+<script>
+let client = null;
+let role = null;
+let issues = [];
+let currentRestaurant = null;
+let selectedId = null;
+let maintenanceAuth = false;
+
+const RESTAURANTS = ["Barrosa","Chiclana","Bahía Sur","Janer","Conil","Cayetano","San Juan","Valdelagrana","Paseo","Fuentebravía"];
+
+window.addEventListener('DOMContentLoaded', () => {
+
+  const sel = document.getElementById('restaurantSelect');
+  RESTAURANTS.forEach(r => {
+    const opt = document.createElement('option');
+    opt.value = r;
+    opt.textContent = r;
+    sel.appendChild(opt);
+  });
+
+  client = window.supabase.createClient(
+    "https://vteqkfzwwkqryxfeupie.supabase.co",
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InZ0ZXFrZnp3d2txcnl4ZmV1cGllIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzc5OTY1MDAsImV4cCI6MjA5MzU3MjUwMH0.KuTuyknEhAkGG_rjvWcpY7Yq3bAgrrkA4qHDhdN_AWo"
+  );
+
+  window.client = client;
+
+  document.getElementById('btnPersonal').addEventListener('click', () => setRole('personal'));
+  document.getElementById('btnMant').addEventListener('click', () => openLogin())
+  document.getElementById('btnEnviar').addEventListener('click', addIssue);
+  document.getElementById('restaurantSelect').addEventListener('change', setRestaurant);
+});
+
+function openLogin(){
+  document.getElementById('loginModal').style.display='block';
+}
+
+function closeLogin(){
+  document.getElementById('loginModal').style.display='none';
+}
+
+function checkAdmin(){
+  const pass = document.getElementById('adminPass').value;
+
+  if(pass !== "8888"){
+    alert("Clave incorrecta");
+    return;
+  }
+
+  maintenanceAuth = true;
+  role = 'mantenimiento';
+
+  document.getElementById('roleText').innerText = "Rol: mantenimiento";
+  document.getElementById('form').style.display = 'none';
+
+  closeLogin();
+  loadIssues();
+}
+
+function setRestaurant(){
+  currentRestaurant = document.getElementById('restaurantSelect').value;
+  loadIssues();
+}
+
+function setRole(r){
+  role = r;
+  maintenanceAuth = false;
+
+  document.getElementById('roleText').innerText = "Rol: " + r;
+  document.getElementById('form').style.display = (r === 'personal') ? 'block' : 'none';
+
+  loadIssues();
+}
+
+async function addIssue(){
+  const desc = document.getElementById('desc').value.trim();
+  const priority = document.getElementById('priority').value;
+
+  if(!desc) return alert("Escribe una descripción");
+  if(!currentRestaurant) return alert("Selecciona restaurante");
+
+  const { error } = await client.from('averias').insert([
+    {
+      texto: desc,
+      prioridad: priority,
+      estado: 'pendiente',
+      restaurante: currentRestaurant
+    }
+  ]);
+
+  if(error) return alert(error.message);
+
+  document.getElementById('desc').value='';
+  loadIssues();
+}
+
+async function loadIssues(){
+  const { data } = await client
+    .from('averias')
+    .select('*')
+    .order('fecha_espera', { ascending: true, nullsFirst: false });
+
+  issues = data || [];
+  render();
+}
+
+function changePriority(id, newPriority){
+  client.from('averias')
+    .update({ prioridad: newPriority })
+    .eq('id', id)
+    .then(() => loadIssues());
+}
+
+function render(){
+  const list = document.getElementById('list');
+  list.innerHTML = '';
+
+  issues.forEach(i => {
+    list.innerHTML += `
+      <div class='card ${i.prioridad}'>
+        <b>${i.texto}</b><br>
+        🏪 ${i.restaurante}<br>
+        Prioridad: ${i.prioridad}<br>
+        Estado: ${i.estado}<br>
+        📅 ${i.fecha_espera || 'Sin fecha'}<br>
+
+        ${maintenanceAuth ? `
+          <button onclick="resolveIssue(${i.id})">✔ Resolver</button>
+          <button onclick="openWait(${i.id})">⏳ Lista espera</button><br>
+
+          <button onclick="changePriority(${i.id},'urgente')">🔴 Urgente</button>
+          <button onclick="changePriority(${i.id},'media')">🟠 Media</button>
+          <button onclick="changePriority(${i.id},'baja')">🟢 Baja</button>
+        ` : ''}
+      </div>
+    `;
+  });
+}
+
+function openWait(id){ selectedId = id; document.getElementById('modal').style.display='block'; }
+function closeModal(){ document.getElementById('modal').style.display='none'; }
+
+async function confirmWait(){
+  const fecha = document.getElementById('fechaEspera').value;
+  if(!fecha) return alert("Selecciona fecha");
+
+  const { error } = await client.from('averias')
+    .update({ estado:'lista_espera', fecha_espera: fecha })
+    .eq('id', selectedId);
+
+  if(error) return alert(error.message);
+
+  closeModal();
+  loadIssues();
+}
+
+async function resolveIssue(id){
+  await client.from('averias').delete().eq('id', id);
+  loadIssues();
+}
+</script>
+
+</body>
+</html>
